@@ -480,3 +480,272 @@ SET segment = CASE
 END
 FROM customer_aov a
 WHERE ua.id = a.customer_id;
+
+------------------------------------------------------------
+-- ШАГ 6. Привязка решений к бизнес‑процессу (расчёт цены)
+-- Требование:
+-- - скидка на неликвид берётся из app.devices.discount_percent
+-- - VIP получает ДОП. скидку на неликвидный товар
+-- - premium/standard получают скидку на любые покупки
+-- Итог нужно уметь показать в виде конкретного вывода.
+------------------------------------------------------------
+
+-- 6.1 Добавляем базовую "лист‑цену" на устройство (для расчётов)
+ALTER TABLE app.devices
+ADD COLUMN IF NOT EXISTS list_price numeric(12,2) DEFAULT 0;
+
+-- Заполняем лист‑цены (пример; можно менять)
+UPDATE app.devices
+SET list_price = CASE
+  WHEN model ILIKE '%Edge%'       THEN 1600.00
+  WHEN model ILIKE '%Industrial%' THEN 900.00
+  WHEN model ILIKE '%Raspberry%'  THEN 320.00
+  WHEN model ILIKE '%ESP32%'      THEN 260.00
+  WHEN model ILIKE '%LoRa%'       THEN 150.00
+  WHEN model ILIKE '%NB-IoT%'     THEN 700.00
+  ELSE 500.00
+END
+WHERE list_price = 0;
+
+-- 6.2 Функция расчёта цены с учётом скидок
+CREATE OR REPLACE FUNCTION app.calc_order_price(
+  p_customer_id bigint,
+  p_device_id   bigint,
+  p_quantity    int,
+  p_order_ts    timestamptz
+)
+RETURNS TABLE(
+  customer_id bigint,
+  customer_username text,
+  segment text,
+  is_vip boolean,
+  device_id bigint,
+  hw_serial text,
+  model text,
+  quantity int,
+  list_price numeric(12,2),
+  base_amount numeric(12,2),
+  device_discount_percent numeric(5,2),
+  segment_discount_percent numeric(5,2),
+  vip_extra_discount_percent numeric(5,2),
+  total_discount_percent numeric(6,2),
+  final_amount numeric(12,2)
+)
+LANGUAGE sql
+STABLE
+AS $$
+WITH c AS (
+  SELECT id, username, coalesce(segment,'basic') AS segment, coalesce(is_vip,false) AS is_vip
+  FROM app.user_accounts
+  WHERE id = p_customer_id
+),
+d AS (
+  SELECT id, hw_serial, model, coalesce(discount_percent,0) AS device_disc, coalesce(list_price,0) AS list_price
+  FROM app.devices
+  WHERE id = p_device_id
+),
+rates AS (
+  SELECT
+    c.id AS customer_id,
+    c.username AS customer_username,
+    c.segment,
+    c.is_vip,
+    d.id AS device_id,
+    d.hw_serial,
+    d.model,
+    p_quantity AS quantity,
+    d.list_price,
+    round((d.list_price * p_quantity)::numeric, 2) AS base_amount,
+    round(d.device_disc::numeric, 2) AS device_discount_percent,
+    round(
+      CASE c.segment
+        WHEN 'premium'  THEN 10.00
+        WHEN 'standard' THEN  5.00
+        ELSE 0.00
+      END::numeric, 2
+    ) AS segment_discount_percent,
+    round(
+      CASE
+        -- VIP получает доп. скидку только на неликвид (т.е. где device_disc > 0)
+        WHEN c.is_vip AND d.device_disc > 0 THEN 5.00
+        ELSE 0.00
+      END::numeric, 2
+    ) AS vip_extra_discount_percent
+  FROM c CROSS JOIN d
+)
+SELECT
+  customer_id,
+  customer_username,
+  segment,
+  is_vip,
+  device_id,
+  hw_serial,
+  model,
+  quantity,
+  list_price,
+  base_amount,
+  device_discount_percent,
+  segment_discount_percent,
+  vip_extra_discount_percent,
+  round((device_discount_percent + segment_discount_percent + vip_extra_discount_percent)::numeric, 2) AS total_discount_percent,
+  round(
+    (base_amount * (1 - (device_discount_percent + segment_discount_percent + vip_extra_discount_percent) / 100))::numeric,
+    2
+  ) AS final_amount
+FROM rates;
+$$;
+
+-- 6.3 Демонстрационная "витрина" по заказам последнего месяца
+CREATE OR REPLACE VIEW app.v_monthly_order_pricing AS
+WITH params AS (
+  SELECT DATE '2026-02-01' AS period_start, DATE '2026-03-01' AS period_end
+),
+orders_m AS (
+  SELECT o.id AS order_id, o.customer_id, o.device_id, o.quantity, o.order_ts
+  FROM app.orders_p o, params p
+  WHERE o.order_ts >= p.period_start
+    AND o.order_ts <  p.period_end
+),
+priced AS (
+  SELECT
+    om.order_id,
+    (app.calc_order_price(om.customer_id, om.device_id, om.quantity, om.order_ts)).*
+  FROM orders_m om
+)
+SELECT * FROM priced
+ORDER BY order_id;
+
+-- 6.4 Гарантируем наличие кейсов для демонстрации:
+-- - VIP покупает неликвид (discount_percent > 0) в текущем месяце
+WITH vip_user AS (
+  SELECT id AS customer_id
+  FROM app.user_accounts
+  WHERE is_vip = true
+  ORDER BY id
+  LIMIT 1
+),
+unpopular_device AS (
+  SELECT id AS device_id
+  FROM app.devices
+  WHERE coalesce(discount_percent,0) > 0
+  ORDER BY id
+  LIMIT 1
+)
+INSERT INTO app.orders_p (customer_id, device_id, order_ts, quantity, amount)
+SELECT
+  v.customer_id,
+  u.device_id,
+  '2026-02-24 10:00+00'::timestamptz,
+  1,
+  0
+FROM vip_user v, unpopular_device u
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM app.orders_p o
+  WHERE o.customer_id = v.customer_id
+    AND o.device_id   = u.device_id
+    AND o.order_ts   >= '2026-02-01'
+    AND o.order_ts   <  '2026-03-01'
+);
+
+------------------------------------------------------------
+-- ШАГ 7. КОНКРЕТНЫЕ ВЫВОДЫ ДЛЯ ОТЧЁТА (что “всё применилось”)
+------------------------------------------------------------
+
+-- 7.1 Показать, какие клиенты стали VIP и какие сегменты назначены
+SELECT
+  id,
+  username,
+  is_vip,
+  segment
+FROM app.user_accounts
+ORDER BY is_vip DESC, segment, id;
+
+-- 7.2 Показать неликвидные товары и назначенную скидку из devices.discount_percent
+SELECT
+  id AS device_id,
+  hw_serial,
+  model,
+  list_price,
+  discount_percent
+FROM app.devices
+ORDER BY discount_percent DESC, id;
+
+-- 7.3 Показать расчёт цены: VIP клиент + неликвидный товар (видно 3 скидки)
+WITH vip_user AS (
+  SELECT id AS customer_id
+  FROM app.user_accounts
+  WHERE is_vip = true
+  ORDER BY id
+  LIMIT 1
+),
+unpopular_device AS (
+  SELECT id AS device_id
+  FROM app.devices
+  WHERE coalesce(discount_percent,0) > 0
+  ORDER BY id
+  LIMIT 1
+)
+SELECT *
+FROM app.calc_order_price(
+  (SELECT customer_id FROM vip_user),
+  (SELECT device_id FROM unpopular_device),
+  1,
+  '2026-02-24 10:00+00'
+);
+
+-- 7.4 Показать расчёт цены: premium и standard на ЛЮБОЙ покупке (скидка сегмента применяется всегда)
+WITH any_device AS (
+  SELECT id AS device_id
+  FROM app.devices
+  ORDER BY id
+  LIMIT 1
+),
+premium_user AS (
+  SELECT id AS customer_id
+  FROM app.user_accounts
+  WHERE segment = 'premium'
+  ORDER BY id
+  LIMIT 1
+),
+standard_user AS (
+  SELECT id AS customer_id
+  FROM app.user_accounts
+  WHERE segment = 'standard'
+  ORDER BY id
+  LIMIT 1
+)
+SELECT 'premium' AS demo_case, *
+FROM app.calc_order_price(
+  (SELECT customer_id FROM premium_user),
+  (SELECT device_id FROM any_device),
+  1,
+  '2026-02-24 11:00+00'
+)
+UNION ALL
+SELECT 'standard' AS demo_case, *
+FROM app.calc_order_price(
+  (SELECT customer_id FROM standard_user),
+  (SELECT device_id FROM any_device),
+  1,
+  '2026-02-24 11:05+00'
+);
+
+-- 7.5 Показать витрину по заказам за последний месяц: видно, что скидки реально считаются на заказах
+SELECT
+  order_id,
+  customer_username,
+  segment,
+  is_vip,
+  hw_serial,
+  model,
+  quantity,
+  list_price,
+  base_amount,
+  device_discount_percent,
+  segment_discount_percent,
+  vip_extra_discount_percent,
+  total_discount_percent,
+  final_amount
+FROM app.v_monthly_order_pricing
+ORDER BY order_id;
