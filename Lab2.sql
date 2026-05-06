@@ -193,9 +193,8 @@ FROM app.events_big
 WHERE payload @> '{"source":"sensor"}'::jsonb
   AND tags @> ARRAY['critical']::text[];
 
-------------------------------------------------------------
--- ЗАДАНИЕ 2. ТРИГГЕРЫ ДЛЯ ЦЕЛОСТНОСТИ И БЕЗОПАСНОСТИ
-------------------------------------------------------------
+-- ЗАДАНИЕ 2. ТРИГГЕРЫ
+-- Ниже делаю "учебный" мини-контур: товары, заказы, сотрудники.
 
 ------------------------------------------------------------
 -- 2.0 Учебные таблицы для демонстрации триггеров
@@ -244,62 +243,55 @@ CREATE TABLE app.employees_auth (
     updated_at             timestamptz
 );
 
-------------------------------------------------------------
--- 2.1 Триггер уникальности перед INSERT
+-- 2.1 Проверка уникальности SKU перед вставкой
 ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION app.trg_products_sku_unique()
+CREATE OR REPLACE FUNCTION app.fn_check_sku_unique()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM app.products_lab2 p
-        WHERE lower(p.sku) = lower(NEW.sku)
-    ) THEN
-        RAISE EXCEPTION 'SKU "%" уже существует. Вставка отменена.', NEW.sku;
+    IF EXISTS (SELECT 1 FROM app.products_lab2 WHERE sku = NEW.sku) THEN
+        RAISE EXCEPTION 'SKU "%" уже существует.', NEW.sku;
     END IF;
     RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER trg_products_sku_unique
+CREATE TRIGGER before_insert_check_sku_unique
 BEFORE INSERT ON app.products_lab2
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_products_sku_unique();
+EXECUTE FUNCTION app.fn_check_sku_unique();
 
 ------------------------------------------------------------
--- 2.2 Триггер каскадного обновления цены в связанных заказах
+-- 2.2 Если поменяли цену товара, обновляем "новые" заказы
 ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION app.trg_products_price_cascade()
+CREATE OR REPLACE FUNCTION app.fn_sync_price_to_orders()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF NEW.price <> OLD.price THEN
-        UPDATE app.orders_lab2 o
-        SET unit_price   = NEW.price,
-            total_amount = round((NEW.price * o.qty)::numeric, 2),
-            updated_at   = now()
-        WHERE o.product_id = NEW.id
-          AND o.status IN ('new', 'queued');
-    END IF;
+    UPDATE app.orders_lab2
+    SET unit_price   = NEW.price,
+        total_amount = NEW.price * qty,
+        updated_at   = now()
+    WHERE product_id = NEW.id
+      AND status = 'new';
     RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER trg_products_price_cascade
+CREATE TRIGGER after_product_price_update_sync_orders
 AFTER UPDATE OF price ON app.products_lab2
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_products_price_cascade();
+EXECUTE FUNCTION app.fn_sync_price_to_orders();
 
 ------------------------------------------------------------
--- 2.3 Триггер на аномальные удаления (блокировка)
+-- 2.3 Блокируем "массовые" удаления (больше 5 за минуту)
 ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION app.trg_orders_detect_mass_delete()
+CREATE OR REPLACE FUNCTION app.fn_block_mass_delete()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -309,8 +301,7 @@ BEGIN
     INSERT INTO app.delete_audit_lab2(table_name, deleted_id, deleted_by, deleted_at)
     VALUES ('orders_lab2', OLD.id, session_user, now());
 
-    SELECT count(*)
-    INTO v_cnt
+    SELECT count(*) INTO v_cnt
     FROM app.delete_audit_lab2 a
     WHERE a.table_name = 'orders_lab2'
       AND a.deleted_by = session_user
@@ -324,64 +315,55 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER trg_orders_detect_mass_delete
+CREATE TRIGGER after_delete_check_mass_delete
 AFTER DELETE ON app.orders_lab2
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_orders_detect_mass_delete();
+EXECUTE FUNCTION app.fn_block_mass_delete();
 
 ------------------------------------------------------------
--- 2.4 Триггер автозаполнения даты/времени
+-- 2.4 Авто-таймстемпы: created_at/updated_at
 ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION app.trg_set_timestamps()
+CREATE OR REPLACE FUNCTION app.fn_fill_timestamps()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
-        NEW.created_at := COALESCE(NEW.created_at, now());
-        NEW.updated_at := COALESCE(NEW.updated_at, now());
-    ELSIF TG_OP = 'UPDATE' THEN
-        NEW.updated_at := now();
+        NEW.created_at := now();
     END IF;
+    NEW.updated_at := now();
     RETURN NEW;
 END;
 $$;
 
-CREATE TRIGGER trg_products_set_timestamps
+CREATE TRIGGER before_products_fill_timestamps
 BEFORE INSERT OR UPDATE ON app.products_lab2
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_set_timestamps();
+EXECUTE FUNCTION app.fn_fill_timestamps();
 
-CREATE TRIGGER trg_orders_set_timestamps
+CREATE TRIGGER before_orders_fill_timestamps
 BEFORE INSERT OR UPDATE ON app.orders_lab2
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_set_timestamps();
+EXECUTE FUNCTION app.fn_fill_timestamps();
 
-CREATE TRIGGER trg_employees_set_timestamps
+CREATE TRIGGER before_employees_fill_timestamps
 BEFORE INSERT OR UPDATE ON app.employees_auth
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_set_timestamps();
+EXECUTE FUNCTION app.fn_fill_timestamps();
 
 ------------------------------------------------------------
--- 2.5 Триггер запрета смены пароля без разрешения
--- Разрешение задается:
---   SET LOCAL app.allow_password_change = 'on';
--- либо флагом can_change_password=true в строке сотрудника.
+-- 2.5 Блок смены пароля без отдельного разрешения
+-- Для простоты: менять пароль можно только тем, у кого can_change_password=true
 ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION app.trg_block_password_change()
+CREATE OR REPLACE FUNCTION app.fn_block_password_change()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
-DECLARE
-    v_allow text;
 BEGIN
     IF NEW.password_hash IS DISTINCT FROM OLD.password_hash THEN
-        v_allow := current_setting('app.allow_password_change', true);
-
-        IF NOT COALESCE(OLD.can_change_password, false)
-           AND COALESCE(v_allow, 'off') <> 'on' THEN
+        IF OLD.can_change_password = false THEN
             RAISE EXCEPTION 'Смена пароля для "%" запрещена: нет специального разрешения.', OLD.login;
         END IF;
     END IF;
@@ -390,10 +372,10 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER trg_block_password_change
+CREATE TRIGGER before_update_password_check_permission
 BEFORE UPDATE OF password_hash ON app.employees_auth
 FOR EACH ROW
-EXECUTE FUNCTION app.trg_block_password_change();
+EXECUTE FUNCTION app.fn_block_password_change();
 
 ------------------------------------------------------------
 -- 2.6 Демоданные для триггеров
@@ -416,22 +398,30 @@ SELECT
 FROM app.products_lab2 p;
 
 INSERT INTO app.employees_auth(login, password_hash, can_change_password)
-VALUES
-('emp_a', md5('start_pass_a'), false),
-('emp_b', md5('start_pass_b'), true);
+SELECT
+    ua.username AS login,
+    md5('Start#2026_' || ua.username) AS password_hash,
+    CASE
+        WHEN ua.username = 'nikita_login' THEN true
+        ELSE false
+    END AS can_change_password
+FROM app.user_accounts ua
+WHERE ua.username IN ('nikita_login', 'slava_login', 'vlad_login')
+ORDER BY ua.id
+LIMIT 3;
 
 ------------------------------------------------------------
 -- 2.7 Демонстрация работы триггеров
 ------------------------------------------------------------
 
--- A) Проверка уникальности SKU (должна быть ошибка, но скрипт продолжит работу)
+-- A) Проверяю уникальность SKU (ловлю ожидаемую ошибку)
 DO $$
 BEGIN
     BEGIN
         INSERT INTO app.products_lab2(sku, product_name, price)
         VALUES ('SKU-1001', 'Duplicated SKU Product', 999.99);
     EXCEPTION WHEN OTHERS THEN
-        RAISE NOTICE 'Ожидаемая ошибка уникальности: %', SQLERRM;
+        RAISE NOTICE 'OK: триггер не дал вставить дубль SKU: %', SQLERRM;
     END;
 END;
 $$;
@@ -454,7 +444,7 @@ JOIN app.orders_lab2 o ON o.product_id = p.id
 WHERE p.sku = 'SKU-1001'
 ORDER BY o.id;
 
--- C) Массовое удаление (6 удалений за минуту -> блокировка)
+-- C) Проверяю блокировку "массового" удаления
 INSERT INTO app.orders_lab2(customer_id, product_id, qty, unit_price, total_amount, status)
 SELECT
   (SELECT min(id) FROM app.user_accounts),
@@ -462,27 +452,21 @@ SELECT
   1, 250.00, 250.00, 'new'
 FROM generate_series(1, 6);
 
-DO $$
-DECLARE
-    r record;
-BEGIN
-    FOR r IN (SELECT id FROM app.orders_lab2 ORDER BY id DESC LIMIT 6) LOOP
-        BEGIN
-            DELETE FROM app.orders_lab2 WHERE id = r.id;
-        EXCEPTION WHEN OTHERS THEN
-            RAISE NOTICE 'Ожидаемая блокировка удаления: %', SQLERRM;
-            EXIT;
-        END;
-    END LOOP;
-END;
-$$;
+-- Удаляю подряд 6 последних записей.
+-- На шестой команде должно упасть исключение от триггера.
+DELETE FROM app.orders_lab2 WHERE id = (SELECT max(id) FROM app.orders_lab2);
+DELETE FROM app.orders_lab2 WHERE id = (SELECT max(id) FROM app.orders_lab2);
+DELETE FROM app.orders_lab2 WHERE id = (SELECT max(id) FROM app.orders_lab2);
+DELETE FROM app.orders_lab2 WHERE id = (SELECT max(id) FROM app.orders_lab2);
+DELETE FROM app.orders_lab2 WHERE id = (SELECT max(id) FROM app.orders_lab2);
+DELETE FROM app.orders_lab2 WHERE id = (SELECT max(id) FROM app.orders_lab2);
 
 SELECT *
 FROM app.delete_audit_lab2
 ORDER BY id DESC
 LIMIT 20;
 
--- D) Автозаполнение дат created_at / updated_at
+-- D) Проверяю автозаполнение created_at / updated_at
 INSERT INTO app.products_lab2(sku, product_name, price)
 VALUES ('SKU-2001', 'Auto Timestamp Product', 333.00);
 
@@ -490,31 +474,32 @@ SELECT id, sku, created_at, updated_at
 FROM app.products_lab2
 WHERE sku = 'SKU-2001';
 
--- E) Запрет смены пароля без разрешения
+-- E) Проверяю запрет смены пароля без разрешения
 DO $$
 BEGIN
     BEGIN
         UPDATE app.employees_auth
-        SET password_hash = md5('new_pass_for_emp_a')
-        WHERE login = 'emp_a';
+        SET password_hash = md5('new_pass_for_slava')
+        WHERE login = 'slava_login';
     EXCEPTION WHEN OTHERS THEN
-        RAISE NOTICE 'Ожидаемая блокировка смены пароля: %', SQLERRM;
+        RAISE NOTICE 'OK: триггер заблокировал смену пароля: %', SQLERRM;
     END;
 END;
 $$;
 
--- Разрешенная смена пароля через специальный флаг сессии
-BEGIN;
-SET LOCAL app.allow_password_change = 'on';
+-- Делаем slava_login "разрешенным", потом меняем пароль
 UPDATE app.employees_auth
-SET password_hash = md5('allowed_change_emp_a')
-WHERE login = 'emp_a';
-COMMIT;
+SET can_change_password = true
+WHERE login = 'slava_login';
 
--- Разрешенная смена пароля у сотрудника с can_change_password=true
 UPDATE app.employees_auth
-SET password_hash = md5('allowed_change_emp_b')
-WHERE login = 'emp_b';
+SET password_hash = md5('allowed_change_slava')
+WHERE login = 'slava_login';
+
+-- Разрешенная смена пароля у сотрудника с can_change_password=true из seed-данных
+UPDATE app.employees_auth
+SET password_hash = md5('allowed_change_nikita')
+WHERE login = 'nikita_login';
 
 SELECT login, can_change_password, created_at, updated_at
 FROM app.employees_auth
