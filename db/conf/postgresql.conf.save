@@ -1,0 +1,12 @@
+listen_addresses = '*'
+port = 5432
+ssl = on
+ssl_cert_file = '/etc/postgresql/ssl/server.crt'
+ssl_key_file = '/etc/postgresql/ssl/server.key'
+
+password_encryption = scram-sha-256
+max_connections = 100
+shared_buffers = 128MB
+dynamic_shared_memory_type = posix
+timezone = 'UTC'
+

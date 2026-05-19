@@ -55,6 +55,14 @@ VALUES
 ('lab3_pgp_loc',   'encrypt app.devices.location_desc', 'vault://iot/lab3/pgp/location', interval '180 days')
 ON CONFLICT (name) DO NOTHING;
 
+-- Для шифртекста в "исходных" колонках увеличиваем тип до text.
+-- Иначе armored PGP-строки не помещаются в varchar.
+ALTER TABLE app.user_accounts
+ALTER COLUMN email TYPE text;
+
+ALTER TABLE app.devices
+ALTER COLUMN location_desc TYPE text;
+
 -- 2.0.1 Baseline замеры ДО шифрования (часть Задания 5)
 EXPLAIN ANALYZE
 SELECT id, username, email
@@ -72,12 +80,37 @@ VALUES ('u_pre', 'u_pre@example.com', 'Perf', 'Pre', NULL)
 ON CONFLICT (username) DO NOTHING;
 
 -- 2.1 Симметричное шифрование email
--- Ключ задаем в сессии. Для лабы допустимо; в проде ключи из Vault/KMS/HSM.
-SELECT set_config('app.sym_key', 'lab3_sym_key_2026', false);
+-- Ключи грузим как в проде: из Vault (через psql-переменные).
+vault server -dev -dev-root-token-id=root
+vault kv get secret/iot/lab3
+-- Пример перед запуском скрипта:
+-- export VAULT_ADDR='http://127.0.0.1:8200'
+-- export VAULT_TOKEN='root'
+-- \set sym_key  `vault kv get -field=sym  secret/iot/lab3`
+-- \set pgp_pub  `vault kv get -field=pub  secret/iot/lab3`
+-- \set pgp_priv `vault kv get -field=priv secret/iot/lab3`
+-- \set pgp_pass `vault kv get -field=pass secret/iot/lab3`
+SELECT set_config('app.sym_key',  :'sym_key',  false);
+SELECT set_config('app.pgp_pub',  :'pgp_pub',  false);
+SELECT set_config('app.pgp_priv', :'pgp_priv', false);
+SELECT set_config('app.pgp_pass', :'pgp_pass', false);
 
-UPDATE app.user_accounts
-SET email = armor(pgp_sym_encrypt(email, current_setting('app.sym_key')))
-WHERE email IS NOT NULL;
+DO $$
+DECLARE
+    v_sym text;
+BEGIN
+    v_sym := current_setting('app.sym_key', true);
+
+    IF v_sym IS NULL OR length(v_sym) = 0 THEN
+        RAISE NOTICE 'Симметричное шифрование email пропущено: не задан app.sym_key (Vault).';
+    ELSE
+        UPDATE app.user_accounts
+        SET email = armor(pgp_sym_encrypt(email, v_sym))
+        WHERE email IS NOT NULL
+          AND email NOT LIKE '-----BEGIN PGP MESSAGE-----%';
+    END IF;
+END;
+$$;
 
 -- Без ключа виден только шифртекст.
 SELECT id, username, email
@@ -86,46 +119,39 @@ ORDER BY id
 LIMIT 10;
 
 -- С ключом получаем расшифрованный email.
-SELECT
-    id,
-    username,
-    pgp_sym_decrypt(dearmor(email), current_setting('app.sym_key')) AS email_decrypted
-FROM app.user_accounts
-ORDER BY id
-LIMIT 10;
+DO $$
+DECLARE
+    v_sym text;
+BEGIN
+    v_sym := current_setting('app.sym_key', true);
+
+    IF v_sym IS NULL OR length(v_sym) = 0 THEN
+        RAISE NOTICE 'Расшифровка email пропущена: не задан app.sym_key (Vault).';
+    ELSE
+        RAISE NOTICE 'Пример запроса расшифровки email:';
+        RAISE NOTICE 'SELECT id, username, pgp_sym_decrypt(dearmor(email), current_setting(''app.sym_key'')) AS email_decrypted FROM app.user_accounts WHERE email LIKE ''-----BEGIN PGP MESSAGE-----%%'' ORDER BY id LIMIT 10;';
+    END IF;
+END;
+$$;
 
 -- 2.2 Асимметричное шифрование location_desc (PGP public/private)
--- Вставьте реальные armored-ключи вместо заглушек.
-CREATE TABLE IF NOT EXISTS app.pgpkeys (
-    id                  smallint PRIMARY KEY DEFAULT 1,
-    pub                 text NOT NULL,
-    priv                text NOT NULL,
-    pass                text
-);
-
-INSERT INTO app.pgpkeys(id, pub, priv, pass)
-VALUES
-(
-    1,
-    '-----BEGIN PGP PUBLIC KEY BLOCK-----\nREPLACE_WITH_REAL_PUBLIC_KEY\n-----END PGP PUBLIC KEY BLOCK-----',
-    '-----BEGIN PGP PRIVATE KEY BLOCK-----\nREPLACE_WITH_REAL_PRIVATE_KEY\n-----END PGP PRIVATE KEY BLOCK-----',
-    'REPLACE_WITH_PASSPHRASE'
-)
-ON CONFLICT (id) DO UPDATE
-SET pub  = EXCLUDED.pub,
-    priv = EXCLUDED.priv,
-    pass = EXCLUDED.pass;
+-- Ключи берем из текущей сессии (подтянуты из Vault).
 
 DO $$
 DECLARE
     v_pub text;
 BEGIN
-    SELECT pub INTO v_pub
-    FROM app.pgpkeys
-    WHERE id = 1;
-    UPDATE app.devices
-    SET location_desc = armor(pgp_pub_encrypt(location_desc, dearmor(v_pub)))
-    WHERE location_desc IS NOT NULL;
+    v_pub := current_setting('app.pgp_pub', true);
+
+    IF v_pub IS NULL OR length(v_pub) = 0 THEN
+        RAISE NOTICE 'PGP public-key шифрование пропущено: не задан app.pgp_pub (загрузите ключ из Vault).';
+    ELSIF v_pub NOT LIKE '-----BEGIN PGP PUBLIC KEY BLOCK-----%' OR v_pub NOT LIKE '%-----END PGP PUBLIC KEY BLOCK-----' OR position('...' IN v_pub) > 0 THEN
+        RAISE NOTICE 'PGP public-key шифрование пропущено: app.pgp_pub не похож на валидный armored public key.';
+    ELSE
+        UPDATE app.devices
+        SET location_desc = armor(pgp_pub_encrypt(location_desc, dearmor(v_pub)))
+        WHERE location_desc IS NOT NULL;
+    END IF;
 END;
 $$;
 
@@ -141,82 +167,111 @@ DECLARE
     v_priv text;
     v_pass text;
 BEGIN
-    SELECT priv, pass
-    INTO v_priv, v_pass
-    FROM app.pgpkeys
-    WHERE id = 1;
+    v_priv := current_setting('app.pgp_priv', true);
+    v_pass := current_setting('app.pgp_pass', true);
 
-    IF v_priv LIKE '%REPLACE_WITH_REAL_PRIVATE_KEY%' THEN
-        RAISE NOTICE 'Расшифровка location_desc пропущена: вставьте реальный private key.';
+    IF v_priv IS NULL OR length(v_priv) = 0 THEN
+        RAISE NOTICE 'Расшифровка location_desc пропущена: не задан app.pgp_priv (загрузите ключ из Vault).';
+    ELSIF v_priv NOT LIKE '-----BEGIN PGP PRIVATE KEY BLOCK-----%' OR v_priv NOT LIKE '%-----END PGP PRIVATE KEY BLOCK-----' OR position('...' IN v_priv) > 0 THEN
+        RAISE NOTICE 'Расшифровка location_desc пропущена: app.pgp_priv не похож на валидный armored private key.';
     ELSE
         RAISE NOTICE 'Пример запроса расшифровки:';
-        RAISE NOTICE 'SELECT id, hw_serial, pgp_pub_decrypt(dearmor(location_desc), dearmor((SELECT priv FROM app.pgpkeys WHERE id=1)), (SELECT pass FROM app.pgpkeys WHERE id=1)) FROM app.devices ORDER BY id LIMIT 10;';
+        RAISE NOTICE 'SELECT id, hw_serial, pgp_pub_decrypt(dearmor(location_desc), dearmor(current_setting(''app.pgp_priv'')), current_setting(''app.pgp_pass'')) FROM app.devices ORDER BY id LIMIT 10;';
     END IF;
 END;
 $$;
 
 -- Выполните вручную после подстановки реальных ключей:
 SELECT
-    id,
-    hw_serial,
-    pgp_pub_decrypt(
-        dearmor(location_desc),
-        dearmor((SELECT priv FROM app.pgpkeys WHERE id = 1)),
-        (SELECT pass FROM app.pgpkeys WHERE id = 1)
+     id,
+     hw_serial,
+     pgp_pub_decrypt(
+         dearmor(location_desc),
+         dearmor(current_setting('app.pgp_priv')),
+         current_setting('app.pgp_pass')
      ) AS location_desc_decrypted
 FROM app.devices
 ORDER BY id
 LIMIT 10;
 
 -- 2.3 Замеры ПОСЛЕ шифрования (часть Задания 5)
-EXPLAIN ANALYZE
-SELECT
-    id,
-    username,
-    pgp_sym_decrypt(dearmor(email), current_setting('app.sym_key')) AS email_decrypted
-FROM app.user_accounts
-WHERE pgp_sym_decrypt(dearmor(email), current_setting('app.sym_key')) LIKE '%@example.com';
+DO $$
+DECLARE
+    v_sym text;
+BEGIN
+    v_sym := current_setting('app.sym_key', true);
+
+    IF v_sym IS NULL OR length(v_sym) = 0 THEN
+        RAISE NOTICE 'EXPLAIN ANALYZE для email с decrypt пропущен: не задан app.sym_key (Vault).';
+    ELSE
+        EXECUTE $q$
+            EXPLAIN ANALYZE
+            SELECT
+                id,
+                username,
+                pgp_sym_decrypt(dearmor(email), current_setting('app.sym_key')) AS email_decrypted
+            FROM app.user_accounts
+            WHERE email LIKE '-----BEGIN PGP MESSAGE-----%'
+              AND pgp_sym_decrypt(dearmor(email), current_setting('app.sym_key')) LIKE '%@example.com';
+        $q$;
+    END IF;
+END;
+$$;
 
 DO $$
 DECLARE
     v_priv text;
 BEGIN
-    SELECT priv INTO v_priv
-    FROM app.pgpkeys
-    WHERE id = 1;
+    v_priv := current_setting('app.pgp_priv', true);
 
-    IF v_priv LIKE '%REPLACE_WITH_REAL_PRIVATE_KEY%' THEN
-        RAISE NOTICE 'EXPLAIN ANALYZE для location_desc с decrypt пропущен: вставьте реальный private key в app.pgpkeys.';
+    IF v_priv IS NULL OR length(v_priv) = 0 THEN
+        RAISE NOTICE 'EXPLAIN ANALYZE для location_desc с decrypt пропущен: не задан app.pgp_priv (Vault).';
+    ELSIF v_priv NOT LIKE '-----BEGIN PGP PRIVATE KEY BLOCK-----%' OR v_priv NOT LIKE '%-----END PGP PRIVATE KEY BLOCK-----' OR position('...' IN v_priv) > 0 THEN
+        RAISE NOTICE 'EXPLAIN ANALYZE для location_desc с decrypt пропущен: app.pgp_priv невалидный.';
     ELSE
         EXECUTE $q$
             EXPLAIN ANALYZE
             SELECT id, hw_serial,
                    pgp_pub_decrypt(
                        dearmor(location_desc),
-                       dearmor((SELECT priv FROM app.pgpkeys WHERE id = 1)),
-                       (SELECT pass FROM app.pgpkeys WHERE id = 1)
+                       dearmor(current_setting('app.pgp_priv')),
+                       current_setting('app.pgp_pass')
                    ) AS loc
             FROM app.devices
             WHERE pgp_pub_decrypt(
                       dearmor(location_desc),
-                      dearmor((SELECT priv FROM app.pgpkeys WHERE id = 1)),
-                      (SELECT pass FROM app.pgpkeys WHERE id = 1)
+                      dearmor(current_setting('app.pgp_priv')),
+                      current_setting('app.pgp_pass')
                   ) ILIKE '%сервер%';
         $q$;
     END IF;
 END;
 $$;
 
-EXPLAIN ANALYZE
-INSERT INTO app.user_accounts (username, email, last_name, first_name, middle_name)
-VALUES (
-    'u_post',
-    armor(pgp_sym_encrypt('u_post@example.com', current_setting('app.sym_key'))),
-    'Perf',
-    'Post',
-    NULL
-)
-ON CONFLICT (username) DO NOTHING;
+DO $$
+DECLARE
+    v_sym text;
+BEGIN
+    v_sym := current_setting('app.sym_key', true);
+
+    IF v_sym IS NULL OR length(v_sym) = 0 THEN
+        RAISE NOTICE 'EXPLAIN ANALYZE INSERT с шифрованием email пропущен: не задан app.sym_key (Vault).';
+    ELSE
+        EXECUTE $q$
+            EXPLAIN ANALYZE
+            INSERT INTO app.user_accounts (username, email, last_name, first_name, middle_name)
+            VALUES (
+                'u_post',
+                armor(pgp_sym_encrypt('u_post@example.com', current_setting('app.sym_key'))),
+                'Perf',
+                'Post',
+                NULL
+            )
+            ON CONFLICT (username) DO NOTHING;
+        $q$;
+    END IF;
+END;
+$$;
 
 ------------------------------------------------------------
 -- ЗАДАНИЕ 3. SSL при передаче данных (опционально, но для >10 баллов)

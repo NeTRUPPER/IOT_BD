@@ -1,6 +1,9 @@
 services:
   db:
-    image: postgres:16-alpine
+    build:
+      context: ./db
+      dockerfile: Dockerfile
+    image: iot_postgres:16
     container_name: iot_postgres
     command:
       - postgres
@@ -12,6 +15,10 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: iot
+      # Контрольные суммы страниц при первой инициализации тома (Lab 4, задание 1).
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      WAL_ARCHIVE_PASSWORD: MySecretPassword
+      PGARCHIVE: /var/lib/postgresql/archive
     ports:
       - "5432:5432"
     volumes:
@@ -19,6 +26,9 @@ services:
       - ./db/conf/postgresql.conf:/etc/postgresql/postgresql.conf:ro
       - ./db/conf/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
       - ./db/conf/ssl:/etc/postgresql/ssl:ro
+      - ./db/scripts/archive_wal.sh:/usr/local/bin/archive_wal.sh:ro
+      - ./db/scripts/restore_wal.sh:/usr/local/bin/restore_wal.sh:ro
+      - ./db/archive:/var/lib/postgresql/archive
       - db_data:/var/lib/postgresql/data
     restart: unless-stopped
 

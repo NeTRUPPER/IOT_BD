@@ -1,0 +1,42 @@
+# --- Секреты и учётные данные ---
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+
+# --- PostgreSQL: резервные копии и WAL (содержат данные БД) ---
+db/backups/*
+!db/backups/.gitignore
+
+db/archive/*
+!db/archive/.gitignore
+!db/archive/.gitkeep
+
+# Временные бэкапы внутри контейнера / на хосте
+**/pg_backup/
+**/lab4-base/
+db/backups/lab4-recovery_target.txt
+db/backups/lab4-target_time.txt
+
+# Зашифрованные и незашифрованные WAL
+*.gz.enc
+*.backup.gz.enc
+
+# --- TLS (приватный ключ не коммитить) ---
+db/conf/ssl/server.key
+db/conf/ssl/*.key
+
+# --- Локальные переопределения Docker ---
+docker-compose.override.yml
+docker-compose.*.local.yml
+
+# --- Служебное ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.log
