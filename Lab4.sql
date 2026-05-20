@@ -25,7 +25,7 @@ SELECT pg_switch_wal();
 
 -- Бэкап выполняется с хоста (не из SQL):
 --   docker exec iot_postgres rm -rf /tmp/pg_backup
---   docker exec iot_postgres pg_basebackup -D /tmp/pg_backup -U postgres -Fp -Xs -P
+--   docker exec iot_postgres pg_basebackup -D /tmp/pg_backup -U iot_dba -Fp -Xs -P
 --   (при data_checksums=on проверка сумм включена по умолчанию в PG 16)
 --   docker cp iot_postgres:/tmp/pg_backup ./db/backups/lab4-base
 

@@ -26,10 +26,10 @@ fix_archive_permissions() {
 
 need_checksums() {
   local cs
-  if ! docker exec "$CONTAINER" pg_isready -U postgres -q 2>/dev/null; then
+  if ! docker exec "$CONTAINER" pg_isready -U iot_dba -q 2>/dev/null; then
     return 1
   fi
-  cs="$(docker exec "$CONTAINER" psql -U postgres -tAc "SHOW data_checksums;" 2>/dev/null || echo off)"
+  cs="$(docker exec "$CONTAINER" psql -U iot_dba -tAc "SHOW data_checksums;" 2>/dev/null || echo off)"
   [[ "${cs// /}" != "on" ]]
 }
 
@@ -39,7 +39,7 @@ volume_name() {
 
 wait_pg() {
   for _ in $(seq 1 120); do
-    if docker exec "$CONTAINER" pg_isready -U postgres -q 2>/dev/null; then
+    if docker exec "$CONTAINER" pg_isready -U iot_dba -q 2>/dev/null; then
       return 0
     fi
     sleep 1
@@ -68,7 +68,7 @@ fi
 fix_archive_permissions
 
 log "Проверка задания 1"
-docker exec "$CONTAINER" psql -U postgres -d iot -v ON_ERROR_STOP=1 -c "
+docker exec "$CONTAINER" psql -U iot_dba -d iot -v ON_ERROR_STOP=1 -c "
   SHOW data_checksums;
   SHOW wal_level;
   SHOW archive_mode;
@@ -80,11 +80,11 @@ rm -rf "$BACKUP_DIR"
 mkdir -p "$(dirname "$BACKUP_DIR")"
 docker exec "$CONTAINER" rm -rf /tmp/pg_backup
 # При data_checksums=on контрольные суммы проверяются по умолчанию (PG 16).
-docker exec "$CONTAINER" pg_basebackup -D /tmp/pg_backup -U postgres -Fp -Xs -P
+docker exec "$CONTAINER" pg_basebackup -D /tmp/pg_backup -U iot_dba -Fp -Xs -P
 docker cp "$CONTAINER:/tmp/pg_backup/." "$BACKUP_DIR/"
 
 log "Контрольная запись и фиксация точки восстановления (LSN + время)"
-docker exec -i "$CONTAINER" psql -U postgres -d iot -v ON_ERROR_STOP=1 <<'SQL'
+docker exec -i "$CONTAINER" psql -U iot_dba -d iot -v ON_ERROR_STOP=1 <<'SQL'
 DROP TABLE IF EXISTS public.important_data;
 CREATE TABLE public.important_data (
     id serial PRIMARY KEY,
@@ -94,23 +94,23 @@ CREATE TABLE public.important_data (
 INSERT INTO public.important_data (note) VALUES ('Данные до аварии');
 SQL
 
-TARGET_LSN="$(docker exec "$CONTAINER" psql -U postgres -d iot -tAc "SELECT pg_current_wal_insert_lsn();" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-TARGET_TIME="$(docker exec "$CONTAINER" psql -U postgres -d iot -tAc "SELECT now();" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+TARGET_LSN="$(docker exec "$CONTAINER" psql -U iot_dba -d iot -tAc "SELECT pg_current_wal_insert_lsn();" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+TARGET_TIME="$(docker exec "$CONTAINER" psql -U iot_dba -d iot -tAc "SELECT now();" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 printf 'lsn=%s\ntime=%s\n' "$TARGET_LSN" "$TARGET_TIME" >"$TARGET_FILE"
 log "recovery_target_lsn = $TARGET_LSN"
 log "recovery_target_time = $TARGET_TIME (для отчёта)"
 
 log "Архивация WAL с контрольной точкой"
-docker exec "$CONTAINER" psql -U postgres -d iot -v ON_ERROR_STOP=1 -c "SELECT pg_switch_wal();"
+docker exec "$CONTAINER" psql -U iot_dba -d iot -v ON_ERROR_STOP=1 -c "SELECT pg_switch_wal();"
 sleep 3
-docker exec "$CONTAINER" psql -U postgres -d iot -tAc \
+docker exec "$CONTAINER" psql -U iot_dba -d iot -tAc \
   "SELECT archived_count, failed_count, last_archived_wal FROM pg_stat_archiver;"
 
 log "Пауза 70 с перед «аварией»"
 sleep 70
 
 log "Имитация инцидента"
-docker exec -i "$CONTAINER" psql -U postgres -d iot -v ON_ERROR_STOP=1 <<'SQL'
+docker exec -i "$CONTAINER" psql -U iot_dba -d iot -v ON_ERROR_STOP=1 <<'SQL'
 DROP TABLE public.important_data;
 CREATE TABLE public.important_data (
     id serial PRIMARY KEY,
@@ -167,12 +167,12 @@ docker compose start "$DB_SERVICE"
 wait_pg
 
 log "Проверка результата PITR"
-docker exec "$CONTAINER" psql -U postgres -d iot -v ON_ERROR_STOP=1 -c "
+docker exec "$CONTAINER" psql -U iot_dba -d iot -v ON_ERROR_STOP=1 -c "
   SELECT * FROM public.important_data;
   SELECT pg_is_in_recovery() AS still_in_recovery;
 "
 
-RESULT="$(docker exec "$CONTAINER" psql -U postgres -d iot -tAc "SELECT note FROM public.important_data LIMIT 1;")"
+RESULT="$(docker exec "$CONTAINER" psql -U iot_dba -d iot -tAc "SELECT note FROM public.important_data LIMIT 1;")"
 if [[ "$RESULT" == "Данные до аварии" ]]; then
   log "УСПЕХ: PITR восстановил состояние до аварии"
 else

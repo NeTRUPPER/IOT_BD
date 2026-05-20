@@ -1,6 +1,6 @@
 -- Лабораторная работа №3
 -- Работа с шифрованием данных (PostgreSQL, БД iot)
--- Запускать от суперпользователя БД (postgres), т.к. есть доступ к pg_authid и ALTER SYSTEM.
+-- Запускать от суперпользователя БД (iot_dba), т.к. есть доступ к pg_authid и ALTER SYSTEM.
 
 SET search_path = app, public;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -318,8 +318,8 @@ ORDER BY name;
 -- 3) Подтвердить SSL-сессию через pg_stat_ssl.
 --
 -- Пример команд:
--- pgbench -h 127.0.0.1 -p 5432 -U postgres -d iot -c 5 -j 2 -T 30 "sslmode=disable"
--- pgbench -h 127.0.0.1 -p 5432 -U postgres -d iot -c 5 -j 2 -T 30 "sslmode=require"
+-- pgbench -h 127.0.0.1 -p 5432 -U iot_dba -d iot -c 5 -j 2 -T 30 "sslmode=disable"
+-- pgbench -h 127.0.0.1 -p 5432 -U iot_dba -d iot -c 5 -j 2 -T 30 "sslmode=require"
 
 ------------------------------------------------------------
 -- ЗАДАНИЕ 6. Выводы по методам и влиянию на производительность

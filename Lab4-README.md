@@ -48,16 +48,16 @@ docker run --rm -v "$(pwd)/db/archive:/a" iot_postgres:16 chown postgres:postgre
 docker run --rm -v "$(pwd)/db/archive:/a" iot_postgres:16 sh -c 'rm -f /a/*.gz.enc'
 
 # Дождаться готовности
-docker exec iot_postgres pg_isready -U postgres
+docker exec iot_postgres pg_isready -U iot_dba
 ```
 
 Подключение к БД:
 
 ```bash
-docker exec -it iot_postgres psql -U postgres -d iot
+docker exec -it iot_postgres psql -U iot_dba -d iot
 ```
 
-Или с хоста: `psql "host=127.0.0.1 user=postgres password=postgres dbname=iot"`.
+Или с хоста: `psql "host=127.0.0.1 user=iot_dba password=iot_dba dbname=iot"`.
 
 ---
 
@@ -133,7 +133,7 @@ openssl enc -d -aes-256-cbc -pass pass:MySecretPassword \
 
 ```bash
 docker exec iot_postgres rm -rf /tmp/pg_backup
-docker exec iot_postgres pg_basebackup -D /tmp/pg_backup -U postgres -Fp -Xs -P
+docker exec iot_postgres pg_basebackup -D /tmp/pg_backup -U iot_dba -Fp -Xs -P
 ```
 
 - `-Fp` — plain (каталог с файлами)
@@ -304,7 +304,7 @@ docker logs iot_postgres 2>&1 | tail -40
 Проверка:
 
 ```bash
-docker exec -it iot_postgres psql -U postgres -d iot -c \
+docker exec -it iot_postgres psql -U iot_dba -d iot -c \
   "SELECT * FROM public.important_data;"
 ```
 
@@ -347,7 +347,7 @@ docker run --rm -v "$(pwd)/db/archive:/a" iot_postgres:16 chown postgres:postgre
 
 # Задание 1 — в psql (Lab4.sql, блок 1)
 
-docker exec iot_postgres pg_basebackup -D /tmp/pg_backup -U postgres -Fp -Xs -P
+docker exec iot_postgres pg_basebackup -D /tmp/pg_backup -U iot_dba -Fp -Xs -P
 docker cp iot_postgres:/tmp/pg_backup/. ./db/backups/lab4-base/
 
 # Задание 2 — в psql (Lab4.sql, блоки 2–3)

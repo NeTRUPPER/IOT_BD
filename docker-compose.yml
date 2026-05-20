@@ -12,8 +12,9 @@ services:
       - -c
       - hba_file=/etc/postgresql/pg_hba.conf
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # Суперпользователь БД (переименован с предустановленного postgres — п. 2.3 КР).
+      POSTGRES_USER: iot_dba
+      POSTGRES_PASSWORD: iot_dba
       POSTGRES_DB: iot
       # Контрольные суммы страниц при первой инициализации тома (Lab 4, задание 1).
       POSTGRES_INITDB_ARGS: "--data-checksums"

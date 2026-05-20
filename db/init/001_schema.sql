@@ -59,7 +59,7 @@ GRANT app_writer TO vlad_login;
 
 GRANT CONNECT ON DATABASE iot TO auditor_login;
 GRANT CONNECT ON DATABASE iot TO nikita_login;
-GRANT ALL     ON DATABASE iot TO postgres;
+GRANT ALL     ON DATABASE iot TO iot_dba;
 GRANT CONNECT ON DATABASE iot TO slava_login;
 GRANT CONNECT ON DATABASE iot TO vlad_login;
 
@@ -70,7 +70,7 @@ GRANT CONNECT ON DATABASE iot TO vlad_login;
 -- SCHEMA: app
 
 CREATE SCHEMA IF NOT EXISTS app
-    AUTHORIZATION postgres;
+    AUTHORIZATION iot_dba;
 
 COMMENT ON SCHEMA app
     IS 'Бизнес-данные IoT системы';
@@ -80,42 +80,42 @@ GRANT USAGE ON SCHEMA app TO app_reader;
 GRANT USAGE ON SCHEMA app TO app_writer;
 GRANT USAGE ON SCHEMA app TO ddl_admin;
 GRANT USAGE ON SCHEMA app TO dml_admin;
-GRANT ALL   ON SCHEMA app TO postgres;
+GRANT ALL   ON SCHEMA app TO iot_dba;
 GRANT USAGE ON SCHEMA app TO security_admin;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA app
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA app
 GRANT DELETE, INSERT, SELECT, UPDATE ON TABLES TO app_owner;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA app
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA app
 GRANT SELECT ON TABLES TO app_reader;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA app
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA app
 GRANT DELETE, INSERT, SELECT, UPDATE ON TABLES TO app_writer;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA app
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA app
 GRANT SELECT, USAGE ON SEQUENCES TO app_owner;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA app
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA app
 GRANT SELECT, USAGE ON SEQUENCES TO app_writer;
 
 -- SCHEMA: audit
 
 CREATE SCHEMA IF NOT EXISTS audit
-    AUTHORIZATION postgres;
+    AUTHORIZATION iot_dba;
 
 COMMENT ON SCHEMA audit
     IS 'Аудит и логирование операций';
 
 GRANT USAGE ON SCHEMA audit TO auditor;
-GRANT ALL   ON SCHEMA audit TO postgres;
+GRANT ALL   ON SCHEMA audit TO iot_dba;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA audit
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA audit
 GRANT SELECT ON TABLES TO auditor;
 
 -- SCHEMA: ref
 
 CREATE SCHEMA IF NOT EXISTS ref
-    AUTHORIZATION postgres;
+    AUTHORIZATION iot_dba;
 
 COMMENT ON SCHEMA ref
     IS 'Справочники и справочная информация';
@@ -125,22 +125,22 @@ GRANT USAGE ON SCHEMA ref TO app_reader;
 GRANT USAGE ON SCHEMA ref TO app_writer;
 GRANT USAGE ON SCHEMA ref TO ddl_admin;
 GRANT USAGE ON SCHEMA ref TO dml_admin;
-GRANT ALL   ON SCHEMA ref TO postgres;
+GRANT ALL   ON SCHEMA ref TO iot_dba;
 GRANT USAGE ON SCHEMA ref TO security_admin;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA ref
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA ref
 GRANT SELECT ON TABLES TO app_owner;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA ref
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA ref
 GRANT SELECT ON TABLES TO app_reader;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA ref
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA ref
 GRANT SELECT ON TABLES TO app_writer;
 
 -- SCHEMA: stg
 
 CREATE SCHEMA IF NOT EXISTS stg
-    AUTHORIZATION postgres;
+    AUTHORIZATION iot_dba;
 
 COMMENT ON SCHEMA stg
     IS 'Временные и обслуживающие объекты';
@@ -148,10 +148,10 @@ COMMENT ON SCHEMA stg
 GRANT USAGE ON SCHEMA stg TO app_owner;
 GRANT ALL   ON SCHEMA stg TO ddl_admin;
 GRANT USAGE ON SCHEMA stg TO dml_admin;
-GRANT ALL   ON SCHEMA stg TO postgres;
+GRANT ALL   ON SCHEMA stg TO iot_dba;
 GRANT USAGE ON SCHEMA stg TO security_admin;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA stg
+ALTER DEFAULT PRIVILEGES FOR ROLE iot_dba IN SCHEMA stg
 GRANT DELETE, INSERT, SELECT, TRUNCATE, UPDATE ON TABLES TO dml_admin;
 
 -- =========================================================
@@ -186,13 +186,13 @@ AS $BODY$
 $BODY$;
 
 ALTER FUNCTION app.current_username()
-    OWNER TO postgres;
+    OWNER TO iot_dba;
 
 GRANT EXECUTE ON FUNCTION app.current_username() TO PUBLIC;
 GRANT EXECUTE ON FUNCTION app.current_username() TO app_owner;
 GRANT EXECUTE ON FUNCTION app.current_username() TO app_reader;
 GRANT EXECUTE ON FUNCTION app.current_username() TO app_writer;
-GRANT EXECUTE ON FUNCTION app.current_username() TO postgres;
+GRANT EXECUTE ON FUNCTION app.current_username() TO iot_dba;
 GRANT EXECUTE ON FUNCTION app.current_username() TO security_admin;
 
 COMMENT ON FUNCTION app.current_username()
@@ -213,7 +213,7 @@ END;
 $$;
 
 ALTER FUNCTION public.update_updated_at_column()
-    OWNER TO postgres;
+    OWNER TO iot_dba;
 
 -- =========================================================
 -- ТАБЛИЦЫ
@@ -613,11 +613,11 @@ CREATE TABLE IF NOT EXISTS audit.login_log
 );
 
 ALTER TABLE IF EXISTS audit.login_log
-    OWNER TO postgres;
+    OWNER TO iot_dba;
 
 REVOKE ALL ON TABLE audit.login_log FROM auditor;
 GRANT SELECT ON TABLE audit.login_log TO auditor;
-GRANT ALL ON TABLE audit.login_log TO postgres;
+GRANT ALL ON TABLE audit.login_log TO iot_dba;
 
 COMMENT ON TABLE audit.login_log IS 'Лог входов пользователей в систему';
 COMMENT ON COLUMN audit.login_log.username IS 'Имя пользователя';
@@ -889,13 +889,13 @@ END;
 $BODY$;
 
 ALTER FUNCTION app.init_session()
-    OWNER TO postgres;
+    OWNER TO iot_dba;
 
 GRANT EXECUTE ON FUNCTION app.init_session() TO PUBLIC;
 GRANT EXECUTE ON FUNCTION app.init_session() TO app_owner;
 GRANT EXECUTE ON FUNCTION app.init_session() TO app_reader;
 GRANT EXECUTE ON FUNCTION app.init_session() TO app_writer;
-GRANT EXECUTE ON FUNCTION app.init_session() TO postgres;
+GRANT EXECUTE ON FUNCTION app.init_session() TO iot_dba;
 GRANT EXECUTE ON FUNCTION app.init_session() TO security_admin;
 
 COMMENT ON FUNCTION app.init_session()
@@ -952,13 +952,13 @@ END;
 $BODY$;
 
 ALTER FUNCTION app.sec_issue_device_command(bigint, text, jsonb)
-    OWNER TO postgres;
+    OWNER TO iot_dba;
 
 GRANT EXECUTE ON FUNCTION app.sec_issue_device_command(bigint, text, jsonb) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION app.sec_issue_device_command(bigint, text, jsonb) TO app_owner;
 GRANT EXECUTE ON FUNCTION app.sec_issue_device_command(bigint, text, jsonb) TO app_reader;
 GRANT EXECUTE ON FUNCTION app.sec_issue_device_command(bigint, text, jsonb) TO app_writer;
-GRANT EXECUTE ON FUNCTION app.sec_issue_device_command(bigint, text, jsonb) TO postgres;
+GRANT EXECUTE ON FUNCTION app.sec_issue_device_command(bigint, text, jsonb) TO iot_dba;
 
 -- FUNCTION: app.sec_rotate_api_key(text, text, timestamp with time zone)
 
@@ -1005,11 +1005,11 @@ END;
 $BODY$;
 
 ALTER FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone)
-    OWNER TO postgres;
+    OWNER TO iot_dba;
 
 GRANT EXECUTE ON FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone) TO PUBLIC;
 GRANT EXECUTE ON FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone) TO app_owner;
 GRANT EXECUTE ON FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone) TO app_reader;
 GRANT EXECUTE ON FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone) TO app_writer;
-GRANT EXECUTE ON FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone) TO postgres;
+GRANT EXECUTE ON FUNCTION app.sec_rotate_api_key(text, text, timestamp with time zone) TO iot_dba;
 
